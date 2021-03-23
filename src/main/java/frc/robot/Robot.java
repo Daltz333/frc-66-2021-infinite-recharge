@@ -4,14 +4,27 @@
 
 package frc.robot;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import edu.wpi.first.hal.SimDouble;
 import edu.wpi.first.hal.simulation.SimDeviceDataJNI;
 import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.TimedRobot;
+import edu.wpi.first.wpilibj.Timer;
+import edu.wpi.first.wpilibj.controller.RamseteController;
+import edu.wpi.first.wpilibj.controller.SimpleMotorFeedforward;
+import edu.wpi.first.wpilibj.geometry.Pose2d;
+import edu.wpi.first.wpilibj.geometry.Rotation2d;
+import edu.wpi.first.wpilibj.kinematics.ChassisSpeeds;
 import edu.wpi.first.wpilibj.simulation.DifferentialDrivetrainSim;
 import edu.wpi.first.wpilibj.smartdashboard.Field2d;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj.system.plant.DCMotor;
+import edu.wpi.first.wpilibj.trajectory.Trajectory;
+import edu.wpi.first.wpilibj.trajectory.TrajectoryConfig;
+import edu.wpi.first.wpilibj.trajectory.TrajectoryGenerator;
+import edu.wpi.first.wpilibj.trajectory.constraint.DifferentialDriveVoltageConstraint;
 import edu.wpi.first.wpilibj.util.Units;
 import frc.robot.Drivetrain;
 
@@ -37,14 +50,52 @@ public class Robot extends TimedRobot {
     7.5,
     60,
     Units.inchesToMeters(3),
-    0.7112,
+    Constants.Drivetrain.kTrackWidth,
     null);
 
   private Field2d field2d = new Field2d();
 
+  // trajectory constraints
+  private final RamseteController ramsete = new RamseteController();
+  private final Timer timer = new Timer();
+  private Trajectory trajectory;
+
+  DifferentialDriveVoltageConstraint autoVoltageConstraint =
+        new DifferentialDriveVoltageConstraint(
+            new SimpleMotorFeedforward(Constants.Drivetrain.ksVolts,
+            Constants.Drivetrain.kvVoltSecondsPerMeter,
+            Constants.Drivetrain.kaVoltSecondsSquaredPerMeter),
+            Constants.Drivetrain.kinematics,
+            10);
+
+  // Create config for trajectory
+  TrajectoryConfig config =
+  new TrajectoryConfig(Constants.Drivetrain.kMaxSpeedMetersPerSecond,
+                        Constants.Drivetrain.kMaxAccelerationMetersPerSecondSquared)
+      // Add kinematics to ensure max speed is actually obeyed
+      .setKinematics(Constants.Drivetrain.kinematics)
+      // Apply the voltage constraint
+      .addConstraint(autoVoltageConstraint);
+
   @Override
   public void robotInit() {
     SmartDashboard.putData("Field", field2d);
+
+    setNetworkTablesFlushEnabled(true);
+
+    trajectory =
+        TrajectoryGenerator.generateTrajectory(
+            new Pose2d(2, 2, new Rotation2d()),
+            List.of(),
+            new Pose2d(6, 2, new Rotation2d()),
+            config);
+
+    List<Pose2d> poses = new ArrayList<>();
+    for (Trajectory.State state : trajectory.getStates()) {
+      poses.add(state.poseMeters);
+    }
+
+    field2d.getObject("foo").setPoses(poses);
   }
 
   @Override
@@ -52,17 +103,25 @@ public class Robot extends TimedRobot {
     drivetrain.updateOdometry();
     SmartDashboard.putNumber("LeftMotor", drivetrain.getLeftMotor());
     SmartDashboard.putNumber("RightMotor", drivetrain.getRightMotor());
+    SmartDashboard.putNumber("Robot X", drivetrain.getOdometry().getPoseMeters().getX());
     SmartDashboard.putNumber("Robot Y", drivetrain.getOdometry().getPoseMeters().getY());
     field2d.setRobotPose(drivetrain.getOdometry().getPoseMeters());
   }
 
   @Override
   public void autonomousInit() {
+    timer.reset();
+    timer.start();
+    drivetrain.resetOdometry(trajectory.getInitialPose());
   }
 
   @Override
   public void autonomousPeriodic() {
-    testAuto.driveStraight(1);
+    var elapsed = timer.get();
+    Trajectory.State reference = trajectory.sample(elapsed);
+    ChassisSpeeds speeds = ramsete.calculate(drivetrain.getOdometry().getPoseMeters(), reference);
+    SmartDashboard.putNumber("Expected X", reference.poseMeters.getX());
+    drivetrain.setSpeeds(speeds.vxMetersPerSecond, speeds.omegaRadiansPerSecond);
   }
 
   @Override
@@ -78,7 +137,9 @@ public class Robot extends TimedRobot {
   public void disabledInit() {}
 
   @Override
-  public void disabledPeriodic() {}
+  public void disabledPeriodic() {
+    drivetrain.setOutput(0, 0);
+  }
 
   @Override
   public void testInit() {}

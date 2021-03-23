@@ -14,8 +14,14 @@ import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj.SerialPort;
 import edu.wpi.first.wpilibj.XboxController;
 import edu.wpi.first.wpilibj.GenericHID.Hand;
+import edu.wpi.first.wpilibj.controller.PIDController;
+import edu.wpi.first.wpilibj.controller.SimpleMotorFeedforward;
 import edu.wpi.first.wpilibj.drive.DifferentialDrive;
+import edu.wpi.first.wpilibj.geometry.Pose2d;
+import edu.wpi.first.wpilibj.kinematics.ChassisSpeeds;
+import edu.wpi.first.wpilibj.kinematics.DifferentialDriveKinematics;
 import edu.wpi.first.wpilibj.kinematics.DifferentialDriveOdometry;
+import edu.wpi.first.wpilibj.kinematics.DifferentialDriveWheelSpeeds;
 import edu.wpi.first.wpilibj.simulation.AnalogGyroSim;
 import edu.wpi.first.wpilibj.simulation.DifferentialDrivetrainSim;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
@@ -38,6 +44,12 @@ public class Drivetrain {
     // Object for simulated inputs into Talon.
     TalonSRXSimCollection m_leftDriveSim = leftMaster.getSimCollection();
     TalonSRXSimCollection m_rightDriveSim = rightMaster.getSimCollection();
+
+    // Trajectory following PIDController
+    private final PIDController m_leftPIDController = new PIDController(8.5, 0, 0);
+    private final PIDController m_rightPIDController = new PIDController(8.5, 0, 0);
+
+    private final SimpleMotorFeedforward m_feedforward = new SimpleMotorFeedforward(1, 3);
 
     public Drivetrain() {
         leftMaster.configOpenloopRamp(Constants.Drivetrain.kDriveRampRate);
@@ -71,6 +83,33 @@ public class Drivetrain {
 
     public void setOutput(double leftPercent, double rightPercent) {
         diffyDrive.tankDrive(-leftPercent, rightPercent);
+
+        diffyDrive.feed();
+    }
+
+    /** Sets speeds to the drivetrain motors. */
+    public void setSpeeds(double xSpeed, double rot) {
+        var speeds = Constants.Drivetrain.kinematics.toWheelSpeeds(new ChassisSpeeds(xSpeed, 0, rot));
+
+        var leftFeedforward = m_feedforward.calculate(speeds.leftMetersPerSecond);
+        var rightFeedforward = m_feedforward.calculate(speeds.rightMetersPerSecond);
+
+        SmartDashboard.putNumber("LeftMetersPerSecond", speeds.leftMetersPerSecond);
+        var leftVelocity = Units.inchesToMeters(leftMaster.getSelectedSensorVelocity() * Constants.Drivetrain.kMagMultiplier);
+        var rightVelocity = Units.inchesToMeters(rightMaster.getSelectedSensorVelocity() * Constants.Drivetrain.kMagMultiplier);
+
+        double leftOutput =
+            m_leftPIDController.calculate(leftVelocity, speeds.leftMetersPerSecond);
+        double rightOutput =
+            m_rightPIDController.calculate(rightVelocity, speeds.rightMetersPerSecond);
+
+        SmartDashboard.putNumber("LeftOut", leftOutput);
+        SmartDashboard.putNumber("RightOut", rightOutput);
+
+        leftMaster.setVoltage(leftOutput);
+        rightMaster.setVoltage(rightOutput);
+
+        diffyDrive.feed();
     }
 
     public double getLeftMotor() {
@@ -113,6 +152,11 @@ public class Drivetrain {
 
     public DifferentialDriveOdometry getOdometry() {
         return odometry;
+    }
+
+    public void resetOdometry(Pose2d pose) {
+        setEncoders(0, 0);
+        odometry.resetPosition(pose, gyro.getRotation2d());
     }
 
     public AHRS getGyro() {
